@@ -1,0 +1,31 @@
+# docker-compose.yml
+#
+# Levanta PostgreSQL local para desarrollo. Las credenciales se leen del
+# mismo .env que usa la app Python (así no hay que definirlas dos veces).
+#
+# Uso:
+#   docker compose up -d      # levantar
+#   docker compose down       # apagar (los datos persisten en el volumen)
+#   docker compose down -v    # apagar Y borrar los datos
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: inmo-agregador-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-inmo_agregador}
+      POSTGRES_USER: ${DB_USER:-inmo_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Definí DB_PASSWORD en tu archivo .env}
+    ports:
+      - "${DB_PORT:-5430}:5432"
+    volumes:
+      - inmo_agregador_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-inmo_user} -d ${DB_NAME:-inmo_agregador}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  inmo_agregador_pgdata:

@@ -120,20 +120,7 @@ class MercadoLibreScraper:
         self._context = self._browser.new_context(
             viewport={"width": 1366, "height": 900},
             locale="es-AR",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
         )
-        # Inyectar scripts ANTES de que la página cargue para evitar
-        # la detección de webdriver por parte de MercadoLibre.
-        self._context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'languages', { get: () => ['es-AR', 'es', 'en'] });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            window.chrome = { runtime: {} };
-        """)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -160,21 +147,10 @@ class MercadoLibreScraper:
                 logger.info("Cargando página %d: %s", num_pagina + 1, url)
 
                 try:
-                    # Usamos commit para no quedarnos bloqueados en el challenge
-                    # anti-bot de ML. Después esperamos networkidle para darle
-                    # tiempo al JS de la página de resolverse y redirigir.
-                    page.goto(url, wait_until="commit", timeout=PLAYWRIGHT_TIMEOUT_MS)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=20_000)
-                    except Exception:
-                        logger.debug("Timeout esperando networkidle, continuando de todos modos")
+                    page.goto(url, wait_until="domcontentloaded")
                 except Exception as exc:
                     logger.error("No se pudo cargar %s: %s", url, exc)
                     break
-
-                # Pequeña espera adicional para que el DOM se estabilice
-                # después del challenge/redirect.
-                page.wait_for_timeout(2000)
 
                 cards = self._buscar_cards(page)
 
@@ -213,7 +189,10 @@ class MercadoLibreScraper:
     def _construir_url(self, offset: int) -> str:
         if offset == 0:
             return f"{ML_LISTADO_BASE}/{self.slug}"
-        # ML pagina con "_Desde_{N}" donde N es 1-indexed (1, 49, 97, ...)
+        # Fix (confirmado empíricamente): la paginación real de ML
+        # requiere este formato exacto, con la barra y "_NoIndex_True"
+        # al final — sin eso, ML devuelve siempre la página 1 aunque el
+        # offset cambie (el scraper "creía" avanzar pero repetía datos).
         return f"{ML_LISTADO_BASE}/{self.slug}/_Desde_{offset + 1}_NoIndex_True"
 
     def _buscar_cards(self, page: Page) -> list[ElementHandle]:

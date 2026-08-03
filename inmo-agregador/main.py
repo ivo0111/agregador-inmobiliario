@@ -20,7 +20,7 @@ logger = get_logger("main")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extractor Fase 1 - Mercado Libre Inmuebles Mendoza")
+    parser = argparse.ArgumentParser(description="Extractor Fase 1+2 - Mercado Libre Inmuebles Mendoza")
     parser.add_argument(
         "--paginas", type=int, default=MAX_PAGINAS_POR_DEFECTO,
         help="Cantidad de páginas de resultados a recorrer (~48 propiedades por página)",
@@ -34,10 +34,18 @@ def main():
         help="Mostrar el navegador (no headless) — útil para depurar si algo falla",
     )
     parser.add_argument(
+        "--sin-db", action="store_true",
+        help="No guardar en PostgreSQL, solo generar el JSON (útil para probar el scraper solo)",
+    )
+    parser.add_argument(
+        "--sin-json", action="store_true",
+        help="No generar el archivo JSON, solo guardar en la base de datos",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default=os.path.join(DATA_DIR, "propiedades_mercadolibre.json"),
-        help="Archivo de salida",
+        help="Archivo de salida JSON",
     )
     args = parser.parse_args()
 
@@ -46,11 +54,28 @@ def main():
     with MercadoLibreScraper(slug=args.slug, headless=not args.visible) as scraper:
         propiedades = scraper.extraer(max_paginas=args.paginas)
 
-    with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(propiedades, f, ensure_ascii=False, indent=2)
+    if not args.sin_json:
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(propiedades, f, ensure_ascii=False, indent=2)
+        logger.info("Guardadas %d propiedades en %s", len(propiedades), args.output)
+        print(f"✅ JSON: {len(propiedades)} propiedades guardadas en {args.output}")
 
-    logger.info("Guardadas %d propiedades en %s", len(propiedades), args.output)
-    print(f"\n✅ Listo. {len(propiedades)} propiedades guardadas en: {args.output}")
+    if not args.sin_db:
+        # Import diferido: así `python main.py --sin-db` no requiere
+        # tener psycopg instalado ni PostgreSQL corriendo.
+        from db.connection import obtener_conexion
+        from db.repository import guardar_propiedades
+
+        with obtener_conexion() as conn:
+            resultado = guardar_propiedades(conn, propiedades)
+
+        print(
+            f"✅ DB: {resultado.publicaciones_nuevas} publicaciones nuevas, "
+            f"{resultado.publicaciones_actualizadas} actualizadas | "
+            f"{resultado.inmuebles_creados} inmuebles creados, "
+            f"{resultado.inmuebles_reutilizados} reutilizados"
+            + (f" | ⚠️ {resultado.errores} errores" if resultado.errores else "")
+        )
 
 
 if __name__ == "__main__":

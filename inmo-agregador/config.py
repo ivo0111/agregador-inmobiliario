@@ -28,8 +28,9 @@ os.makedirs(DEBUG_DIR, exist_ok=True)
 # Playwright (contenido cargado por JS), en vez de pegarle a la API.
 #
 # URL de listado confirmada funcionando (sin login):
-#   https://listado.mercadolibre.com.ar/{slug}
-# ej: https://listado.mercadolibre.com.ar/departamentos-venta-mendoza
+#   https://inmuebles.mercadolibre.com.ar/{slug}/_Desde_{N}_NoIndex_True
+# (el dominio "listado.mercadolibre.com.ar" también carga la página 1,
+# pero la paginación real vive en el subdominio "inmuebles.")
 ML_LISTADO_BASE = "https://inmuebles.mercadolibre.com.ar"
 ML_SLUG_BUSQUEDA = "departamentos-venta-mendoza"
 

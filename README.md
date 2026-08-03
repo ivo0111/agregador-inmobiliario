@@ -127,5 +127,3 @@ Diseño del esquema PostgreSQL/Supabase para la tabla `propiedades`
 - índice geoespacial (PostGIS) sobre `latitud`/`longitud`,
 - estrategia definitiva de deduplicación,
 - tabla `portales` para trackear de dónde vino cada fuente.
-
-Avisame cuándo querés que sigamos con esa fase.
