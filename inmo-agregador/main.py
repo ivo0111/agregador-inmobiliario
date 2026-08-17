@@ -1,12 +1,14 @@
 """
 main.py
 -------
-Punto de entrada de Fase 1: ejecuta el scraper de Mercado Libre y
-guarda el resultado normalizado en data/propiedades_mercadolibre.json
+Punto de entrada de Fase 1+2+3: ejecuta el scraper de Mercado Libre,
+guarda las publicaciones en PostgreSQL y ejecuta el motor de
+deduplicación para agrupar publicaciones en inmuebles canónicos.
 
 Uso:
     python main.py
     python main.py --max 100 --query "casa venta mendoza"
+    python main.py --sin-dedup          # solo scraping + guardado
 """
 
 import argparse
@@ -40,6 +42,10 @@ def main():
     parser.add_argument(
         "--sin-json", action="store_true",
         help="No generar el archivo JSON, solo guardar en la base de datos",
+    )
+    parser.add_argument(
+        "--sin-dedup", action="store_true",
+        help="No ejecutar el motor de deduplicación (solo scraping + guardado)",
     )
     parser.add_argument(
         "--output",
@@ -76,6 +82,21 @@ def main():
             f"{resultado.inmuebles_reutilizados} reutilizados"
             + (f" | ⚠️ {resultado.errores} errores" if resultado.errores else "")
         )
+
+        if not args.sin_dedup:
+            from services.deduplicator import DeduplicatorEngine
+
+            with obtener_conexion() as conn:
+                dedup = DeduplicatorEngine(conn)
+                resultado_dedup = dedup.ejecutar()
+
+            print(
+                f"🔗 Deduplicación: {resultado_dedup.publicaciones_asignadas} "
+                f"publicaciones asignadas, "
+                f"{resultado_dedup.inmuebles_creados} inmuebles creados, "
+                f"{resultado_dedup.inmuebles_reutilizados} reutilizados"
+                + (f" | ⚠️ {resultado_dedup.errores} errores" if resultado_dedup.errores else "")
+            )
 
 
 if __name__ == "__main__":
