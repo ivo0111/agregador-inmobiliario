@@ -74,8 +74,28 @@ CREATE TABLE IF NOT EXISTS publicaciones (
 
     titulo              TEXT NOT NULL,
     tipo_operacion      TEXT NOT NULL DEFAULT 'venta',
+    tipo_propiedad      TEXT,                   -- departamento | casa | terreno | ph | local...
     precio              NUMERIC(14, 2),
     moneda              TEXT,                   -- 'USD' | 'ARS'
+
+    -- Estos campos son necesarios acá (no solo en `inmuebles`) porque
+    -- services/deduplicator.py necesita leer ubicación/m²/ambientes de
+    -- CADA publicación individual (todavía sin inmueble_id asignado)
+    -- para poder compararla contra otras. Antes de este fix estos
+    -- datos se extraían en el scraper pero nunca llegaban a guardarse
+    -- acá, y se perdían.
+    provincia               TEXT NOT NULL DEFAULT 'Mendoza',
+    departamento             TEXT,
+    barrio                   TEXT,
+    direccion                TEXT,
+    latitud                  DOUBLE PRECISION,
+    longitud                 DOUBLE PRECISION,
+    superficie_cubierta_m2   NUMERIC(10, 2),
+    superficie_total_m2      NUMERIC(10, 2),
+    ambientes                SMALLINT,
+    dormitorios              SMALLINT,
+    banios                   SMALLINT,
+    cochera                  BOOLEAN,
 
     fotos               JSONB NOT NULL DEFAULT '[]'::jsonb,
     foto_portada        TEXT,

@@ -43,11 +43,34 @@ ML_RESULTADOS_POR_PAGINA = 48  # observado en la práctica; puede variar
 PLAYWRIGHT_HEADLESS = True
 PLAYWRIGHT_TIMEOUT_MS = 20_000
 MAX_PAGINAS_POR_DEFECTO = 5
+MAX_REINTENTOS_POR_PAGINA = 1  # reintentos si ML devuelve la página de error
 
 # Delay entre cargas de página. Es clave para no parecer un bot agresivo
 # y no saturar el servidor. NO bajar esto para "ir más rápido": es la
 # diferencia entre un scraper sostenible y uno que termina bloqueado.
 DELAY_ENTRE_PAGINAS_SEGUNDOS = (2.5, 5.0)  # rango para randomizar (min, max)
+
+# --- Anti-detección ---
+# User-Agents reales de Chrome (actualizados periodicamente). Playwright
+# por defecto envía "HeadlessChrome" que ML detecta al toque.
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+
+# Viewports comunes de escritorio para rotar el fingerprint.
+VIEWPORTS = [
+    {"width": 1366, "height": 768},
+    {"width": 1440, "height": 900},
+    {"width": 1536, "height": 864},
+    {"width": 1920, "height": 1080},
+    {"width": 1280, "height": 720},
+]
+
+# Path para persistir cookies/estado de sesión de Playwright entre páginas.
+STORAGE_STATE_PATH = os.path.join(BASE_DIR, "debug", "ml_storage_state.json")
 
 # --- Logging ---
 LOG_LEVEL = logging.INFO

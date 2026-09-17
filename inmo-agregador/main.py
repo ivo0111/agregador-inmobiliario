@@ -77,9 +77,7 @@ def main():
 
         print(
             f"✅ DB: {resultado.publicaciones_nuevas} publicaciones nuevas, "
-            f"{resultado.publicaciones_actualizadas} actualizadas | "
-            f"{resultado.inmuebles_creados} inmuebles creados, "
-            f"{resultado.inmuebles_reutilizados} reutilizados"
+            f"{resultado.publicaciones_actualizadas} actualizadas"
             + (f" | ⚠️ {resultado.errores} errores" if resultado.errores else "")
         )
 

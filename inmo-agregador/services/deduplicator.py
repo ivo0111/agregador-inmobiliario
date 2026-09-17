@@ -8,6 +8,14 @@ aún no tienen inmueble_id asignado, determina si corresponden
 a un mismo inmueble físico y crea o actualiza los registros
 de la tabla inmuebles enlazando las publicaciones.
 
+Es la ÚNICA capa que crea inmuebles nuevos (db/repository.py ya no
+lo hace al insertar publicaciones — ver su docstring). Procesa las
+publicaciones en orden de fecha_extraccion, y cada inmueble que crea
+queda disponible en memoria para las publicaciones siguientes de la
+misma corrida, así que dos publicaciones nuevas del mismo batch
+(distintos portales, mismo inmueble físico) sí pueden agruparse entre
+sí sin necesitar una segunda corrida.
+
 Criterios de coincidencia (todos deben cumplirse):
   1. Similitud alta en ubicación (departamento + barrio).
   2. Dormitorios y baños idénticos (si ambos tienen valor).
@@ -70,12 +78,14 @@ class DeduplicatorEngine:
         Flujo:
           1. Obtener publicaciones sin inmueble_id.
           2. Obtener inmuebles existentes.
-          3. Para cada publicación sin inmueble:
-             a. Intentar match contra inmuebles existentes.
-             b. Si no hay match, intentar match contra otras
-                publicaciones sin inmueble ya procesadas.
-             c. Si match encontrado → asignar inmueble_id.
-             d. Si no match → crear nuevo inmueble.
+          3. Para cada publicación sin inmueble (en orden de
+             fecha_extraccion):
+             a. Intentar match contra inmuebles existentes (incluye
+                los creados más temprano en esta misma corrida).
+             b. Si match encontrado → asignar inmueble_id.
+             c. Si no match → crear nuevo inmueble y agregarlo a la
+                lista en memoria para que publicaciones siguientes
+                puedan matchear contra él.
           4. Commit de la transacción.
         """
         resultado = ResultadoDedup()
@@ -92,22 +102,30 @@ class DeduplicatorEngine:
             len(inmuebles_existentes),
         )
 
-        publicaciones_asignadas_set = set()
-
         for pub in publicaciones_sin_inmueble:
             try:
-                inmueble_id = self._intentar_match(
-                    pub, inmuebles_existentes, publicaciones_sin_inmueble,
-                    publicaciones_asignadas_set,
-                )
+                inmueble_id = self._buscar_match(pub, inmuebles_existentes)
                 if inmueble_id is not None:
                     self._asignar_inmueble(pub["id"], inmueble_id)
                     resultado.publicaciones_asignadas += 1
+                    resultado.inmuebles_reutilizados += 1
                 else:
-                    nuevo_inmueble_id = self._crear_inmueble_desde_publicacion(pub)
-                    self._asignar_inmueble(pub["id"], nuevo_inmueble_id)
-                    resultado.inmuebles_creados += 1
+                    inmueble_id = self._crear_inmueble_desde_publicacion(pub)
+                    self._asignar_inmueble(pub["id"], inmueble_id)
                     resultado.publicaciones_asignadas += 1
+                    resultado.inmuebles_creados += 1
+
+                    # FIX clave: agregamos el inmueble recién creado a la
+                    # lista en memoria. Si no hiciéramos esto, dos
+                    # publicaciones NUEVAS del mismo batch (ej. el mismo
+                    # depto scrapeado de ML y de otro portal en la misma
+                    # corrida, ninguna todavía en la tabla `inmuebles`)
+                    # jamás se agruparían entre sí: la publicación #2
+                    # solo vería la foto de `inmuebles` tomada ANTES de
+                    # que la publicación #1 creara su inmueble.
+                    inmuebles_existentes.append(
+                        self._inmueble_dict_desde_pub(inmueble_id, pub)
+                    )
             except Exception as exc:
                 logger.error(
                     "Error deduplicando publicación id=%s: %s",
@@ -168,18 +186,11 @@ class DeduplicatorEngine:
     # Lógica de matching
     # ------------------------------------------------------------------ #
 
-    def _intentar_match(
-        self,
-        pub: dict,
-        inmuebles: list[dict],
-        publicaciones: list[dict],
-        ya_asignadas: set,
-    ) -> Optional[int]:
+    def _buscar_match(self, pub: dict, inmuebles: list[dict]) -> Optional[int]:
         """
-        Intenta encontrar un inmueble que coincida con la publicación.
-        Primero busca entre inmuebles existentes, luego entre
-        publicaciones ya procesadas (sin inmueble_id asignado aún
-        en esta ejecución).
+        Busca, entre los inmuebles existentes (incluyendo los creados
+        más temprano en esta misma corrida — ver `ejecutar()`), uno
+        que coincida con la publicación según los 4 criterios.
         """
         pub_loc = normalizar_ubicacion(
             self._armar_texto_ubicacion(pub)
@@ -190,7 +201,6 @@ class DeduplicatorEngine:
         pub_dormitorios = pub.get("dormitorios")
         pub_banios = pub.get("banios")
 
-        # 1) Intentar match contra inmuebles existentes
         for inmueble in inmuebles:
             if self._criterios_coinciden(
                 pub_loc, pub_m2, pub_precio, pub_moneda,
@@ -198,27 +208,6 @@ class DeduplicatorEngine:
                 inmueble,
             ):
                 return inmueble["id"]
-
-        # 2) Intentar match contra publicaciones ya procesadas
-        #    en esta misma ejecución (que ya tienen inmueble_id asignado)
-        for pub_id in ya_asignadas:
-            pub_asignada = next(
-                (p for p in publicaciones if p["id"] == pub_id), None
-            )
-            if pub_asignada is None or pub_asignada.get("inmueble_id") is None:
-                continue
-            inmueble_id = pub_asignada["inmueble_id"]
-            inmueble = next(
-                (i for i in inmuebles if i["id"] == inmueble_id), None
-            )
-            if inmueble is None:
-                continue
-            if self._criterios_coinciden(
-                pub_loc, pub_m2, pub_precio, pub_moneda,
-                pub_dormitorios, pub_banios,
-                inmueble,
-            ):
-                return inmueble_id
 
         return None
 
@@ -315,8 +304,6 @@ class DeduplicatorEngine:
         ubicacion = normalizar_ubicacion(
             self._armar_texto_ubicacion(pub)
         )
-        m2 = pub.get("superficie_cubierta_m2") or pub.get("superficie_total_m2")
-
         titulo = self._generar_titulo_canonico(pub, ubicacion)
 
         with self._conn.cursor() as cur:
@@ -361,6 +348,36 @@ class DeduplicatorEngine:
 
         logger.info("Inmueble creado: id=%d - %s", inmueble_id, titulo)
         return inmueble_id
+
+    def _inmueble_dict_desde_pub(self, inmueble_id: int, pub: dict) -> dict:
+        """
+        Arma un dict con la misma forma que devuelve
+        `_obtener_inmuebles_existentes()`, a partir de una publicación
+        recién convertida en inmueble. Se usa para actualizar la lista
+        de inmuebles en memoria dentro de `ejecutar()` sin tener que
+        volver a golpear la base de datos (ver comentario en `ejecutar`).
+        """
+        ubicacion = normalizar_ubicacion(
+            self._armar_texto_ubicacion(pub)
+        )
+        return {
+            "id": inmueble_id,
+            "titulo_representativo": None,
+            "tipo_propiedad": pub.get("tipo_propiedad"),
+            "provincia": pub.get("provincia", "Mendoza"),
+            "departamento": ubicacion.get("departamento"),
+            "barrio": ubicacion.get("barrio"),
+            "direccion": ubicacion.get("direccion") or pub.get("direccion"),
+            "latitud": pub.get("latitud"),
+            "longitud": pub.get("longitud"),
+            "superficie_cubierta_m2": pub.get("superficie_cubierta_m2"),
+            "superficie_total_m2": pub.get("superficie_total_m2"),
+            "ambientes": pub.get("ambientes"),
+            "dormitorios": pub.get("dormitorios"),
+            "banios": pub.get("banios"),
+            "cochera": pub.get("cochera"),
+            "hash_deduplicacion": pub.get("hash_duplicado"),
+        }
 
     def _generar_titulo_canonico(self, pub: dict, ubicacion: dict) -> str:
         """
@@ -413,9 +430,3 @@ class DeduplicatorEngine:
             if valor:
                 partes.append(str(valor))
         return ", ".join(partes)
-
-    def _obtener_publicaciones_con_inmueble(
-        self, publicaciones: list[dict]
-    ) -> list[dict]:
-        """Filtra las publicaciones que ya tienen inmueble_id asignado."""
-        return [p for p in publicaciones if p.get("inmueble_id") is not None]

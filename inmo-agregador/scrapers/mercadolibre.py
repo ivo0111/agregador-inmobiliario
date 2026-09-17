@@ -26,6 +26,7 @@ resultados de un día para el otro. Por eso:
      de forma agresiva ni parecer tráfico de bot.
 """
 
+import os
 import random
 import re
 import time
@@ -40,7 +41,11 @@ from config import (
     PLAYWRIGHT_HEADLESS,
     PLAYWRIGHT_TIMEOUT_MS,
     MAX_PAGINAS_POR_DEFECTO,
+    MAX_REINTENTOS_POR_PAGINA,
     DELAY_ENTRE_PAGINAS_SEGUNDOS,
+    USER_AGENTS,
+    VIEWPORTS,
+    STORAGE_STATE_PATH,
     DEBUG_DIR,
     get_logger,
 )
@@ -114,17 +119,44 @@ class MercadoLibreScraper:
 
     def __enter__(self):
         self._playwright = sync_playwright().start()
-        # Headless=False es útil en desarrollo para VER qué está pasando
-        # si algo no matchea; en producción/servidor dejar en True.
         self._browser = self._playwright.chromium.launch(headless=self.headless)
+
+        # Rotación de viewport: elige uno al azar para no tener fingerprint fijo.
+        viewport = random.choice(VIEWPORTS)
+
+        # Contexto con user-agent realista y locale argentino.
         self._context = self._browser.new_context(
-            viewport={"width": 1366, "height": 900},
+            viewport=viewport,
             locale="es-AR",
+            user_agent=random.choice(USER_AGENTS),
+            # Guardar/cargar cookies de sesiones anteriores para parecer
+            # un usuario que ya visitó ML antes (reduce sospecha de bot).
+            storage_state=STORAGE_STATE_PATH if os.path.exists(STORAGE_STATE_PATH) else None,
         )
+
+        # Headers HTTP que un Chrome real envía en cada request.
+        self._context.set_extra_http_headers({
+            "Accept-Language": "es-AR,es;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        })
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # Guardar cookies/estado de sesión para reutilizar en la próxima ejecución.
         if self._context:
+            try:
+                self._context.storage_state(path=STORAGE_STATE_PATH)
+            except Exception:
+                pass
             self._context.close()
         if self._browser:
             self._browser.close()
@@ -147,10 +179,33 @@ class MercadoLibreScraper:
                 logger.info("Cargando página %d: %s", num_pagina + 1, url)
 
                 try:
-                    page.goto(url, wait_until="domcontentloaded")
+                    # "networkidle" espera a que pare el tráfico de red (JS renderizado completo).
+                    page.goto(url, wait_until="networkidle")
                 except Exception as exc:
                     logger.error("No se pudo cargar %s: %s", url, exc)
                     break
+
+                # Reintento: si ML devolvió la página de error, reintentar una vez
+                # después de una pausa más larga (puede ser un rate-limit temporal).
+                if self._es_pagina_error(page):
+                    logger.warning("ML devolvió página de error en intento 1, reintentando...")
+                    time.sleep(random.uniform(5.0, 8.0))
+                    try:
+                        page.goto(url, wait_until="networkidle")
+                    except Exception as exc:
+                        logger.error("No se pudo recargar %s en reintento: %s", url, exc)
+                        break
+                    if self._es_pagina_error(page):
+                        logger.error("ML sigue devolviendo error después de reintento en %s", url)
+                        self._guardar_debug(page, f"error_bloqueo_pagina_{num_pagina + 1}")
+                        break
+
+                # Esperar explícitamente a que aparezca al menos una card en el DOM.
+                # Si no aparecen en 15s, probablemente es la página de error o no hay resultados.
+                try:
+                    primer_selector = self._esperar_cards(page)
+                except Exception:
+                    primer_selector = None
 
                 cards = self._buscar_cards(page)
 
@@ -194,6 +249,32 @@ class MercadoLibreScraper:
         # al final — sin eso, ML devuelve siempre la página 1 aunque el
         # offset cambie (el scraper "creía" avanzar pero repetía datos).
         return f"{ML_LISTADO_BASE}/{self.slug}/_Desde_{offset + 1}_NoIndex_True"
+
+    def _es_pagina_error(self, page: Page) -> bool:
+        """
+        Detecta si ML devolvió la página genérica de error
+        ("Hubo un error accediendo a esta pagina...") en vez del listado.
+        Es un indicador de rate-limit o bloqueo anti-bot.
+        """
+        try:
+            error_marker = page.query_selector("div.ui-empty-state.not-found-page")
+            return error_marker is not None
+        except Exception:
+            return False
+
+    def _esperar_cards(self, page: Page) -> Optional[str]:
+        """
+        Espera explícitamente a que aparezca al menos una card en el DOM.
+        Devuelve el selector que matcheó, o None si ninguno apareció.
+        Esto le da tiempo a ML para renderizar el JS completo.
+        """
+        for selector in SELECTORES_CARD:
+            try:
+                page.wait_for_selector(selector, timeout=15_000)
+                return selector
+            except Exception:
+                continue
+        return None
 
     def _buscar_cards(self, page: Page) -> list[ElementHandle]:
         for selector in SELECTORES_CARD:
